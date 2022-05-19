@@ -1,0 +1,6 @@
+project: rnshah9/samtools
+target: samtools
+
+cmds:
+  - cmd: /repo/samtools faidx @@
+    filepath: /test.fa
