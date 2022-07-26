@@ -2,5 +2,4 @@ project: samtools
 target: samtools
 
 cmds:
-  - cmd: /repo/samtools faidx /test.fa
-    filepath: /test.fa
+  - cmd: /samtools faidx @@
