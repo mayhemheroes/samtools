@@ -9,19 +9,21 @@ RUN autoreconf -i
 RUN ./configure
 RUN make -j8
 ENV LD_LIBRARY_PATH=/htslib
-RUN ldconfig
 
-ADD . /repo
+COPY . /repo
 WORKDIR /repo
 RUN autoreconf
 RUN ./configure
 RUN make -j8
 
-RUN mkdir -p /deps
-RUN ldd /repo/samtools | tr -s '[:blank:]' '\n' | grep '^/' | xargs -I % sh -c 'cp % /deps;'
-
 FROM ubuntu:20.04 as package
+COPY --from=builder /repo/samtools /
 
-COPY --from=builder /deps /deps
-COPY --from=builder /repo/samtools /repo/samtools
-ENV LD_LIBRARY_PATH=/deps
+RUN apt-get update
+RUN DEBIAN_FRONTEND=noninteractive apt-get install -y libz-dev libbz2-dev liblzma-dev build-essential automake git libcurl3-dev
+RUN git clone --recursive https://github.com/samtools/htslib.git
+WORKDIR /htslib
+RUN autoreconf -i
+RUN ./configure
+RUN make -j8
+ENV LD_LIBRARY_PATH=/htslib
