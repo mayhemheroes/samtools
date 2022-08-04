@@ -3,7 +3,7 @@
 .SH NAME
 samtools markdup \- mark duplicate alignments in a coordinate sorted file
 .\"
-.\" Copyright (C) 2008-2011, 2013-2021 Genome Research Ltd.
+.\" Copyright (C) 2008-2011, 2013-2022 Genome Research Ltd.
 .\" Portions copyright (C) 2010, 2011 Broad Institute.
 .\"
 .\" Author: Heng Li <lh3@sanger.ac.uk>
@@ -242,7 +242,7 @@ To use the regex to obtain coordinates from reads, two or three values have to
 be captured.  To mimic the normal behaviour and match a read name of the format
 \fImachine:run:flowcell:lane:tile:x:y\fR use:
 .EX 4
---read-coords '(\w+:[0-9]+:[0-9]+:[0-9]+:[0-9]+):([0-9]+):([0-9]+)'
+--read-coords '([!-9;-?A-~]+:[0-9]+:[0-9]+:[0-9]+:[0-9]+):([0-9]+):([0-9]+)'
 --coords-order txy
 .EE
 
