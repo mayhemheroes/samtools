@@ -21,9 +21,3 @@ COPY --from=builder /repo/samtools /
 
 RUN apt-get update
 RUN DEBIAN_FRONTEND=noninteractive apt-get install -y libz-dev libbz2-dev liblzma-dev build-essential automake git libcurl3-dev
-RUN git clone --recursive https://github.com/samtools/htslib.git
-WORKDIR /htslib
-RUN autoreconf -i
-RUN ./configure
-RUN make -j8
-ENV LD_LIBRARY_PATH=/htslib
