@@ -1,6 +1,6 @@
 /*  sam_view.c -- SAM<->BAM<->CRAM conversion.
 
-    Copyright (C) 2009-2022 Genome Research Ltd.
+    Copyright (C) 2009-2023 Genome Research Ltd.
     Portions copyright (C) 2009, 2011, 2012 Broad Institute.
 
     Author: Heng Li <lh3@sanger.ac.uk>
@@ -43,12 +43,10 @@ DEALINGS IN THE SOFTWARE.  */
 #include "sam_opts.h"
 #include "bam.h" // for bam_get_library and bam_remove_B
 #include "bedidx.h"
+#include "sam_utils.h"
 
 KHASH_SET_INIT_STR(str)
 typedef khash_t(str) *strhash_t;
-
-KHASH_SET_INIT_INT(aux_exists)
-typedef khash_t(aux_exists) *auxhash_t;
 
 // This structure contains the settings for a samview run
 typedef struct samview_settings {
@@ -90,6 +88,7 @@ typedef struct samview_settings {
     int fetch_pairs, nreglist;
     hts_reglist_t *reglist;
     int sanitize;
+    int count_rf; // CRAM_OPT_REQUIRED_FIELDS for view -c
 } samview_settings_t;
 
 // Copied from htslib/sam.c.
@@ -391,33 +390,6 @@ static inline void change_flag(bam1_t *b, samview_settings_t *settings)
 
     if (settings->remove_flag)
         b->core.flag &= ~settings->remove_flag;
-}
-
-int parse_aux_list(auxhash_t *h, char *optarg) {
-    if (!*h)
-        *h = kh_init(aux_exists);
-
-    while (strlen(optarg) >= 2) {
-        int x = optarg[0]<<8 | optarg[1];
-        int ret = 0;
-        kh_put(aux_exists, *h, x, &ret);
-        if (ret < 0)
-            return -1;
-
-        optarg += 2;
-        if (*optarg == ',') // allow white-space too for easy `cat file`?
-            optarg++;
-        else if (*optarg != 0)
-            break;
-    }
-
-    if (strlen(optarg) != 0) {
-        fprintf(stderr, "main_samview: Error parsing option, "
-                "auxiliary tags should be exactly two characters long.\n");
-        return -1;
-    }
-
-    return 0;
 }
 
 static int cmp_reglist_intervals(const void *aptr, const void *bptr)
@@ -789,6 +761,13 @@ static int is_sam(const char *fn) {
     return (l >= 4 && strcasecmp(fn + l-4, ".sam") == 0);
 }
 
+static void aux_list_free(samview_settings_t *settings) {
+    if (settings->keep_tag)
+        kh_destroy(aux_exists, settings->keep_tag);
+    if (settings->remove_tag)
+        kh_destroy(aux_exists, settings->remove_tag);
+}
+
 int main_samview(int argc, char *argv[])
 {
     samview_settings_t settings;
@@ -802,6 +781,7 @@ int main_samview(int argc, char *argv[])
 
     memset(&settings,0,sizeof(settings));
     settings.subsam_frac = -1.0;
+    settings.count_rf = SAM_FLAG; // don't want 0, and this is quick
 
     static const struct option lopts[] = {
         SAM_OPT_GLOBAL_OPTIONS('-', 0, 'O', 0, 'T', '@'),
@@ -889,6 +869,7 @@ int main_samview(int argc, char *argv[])
                 print_error("view", "Incorrect sampling argument \"%s\"", optarg);
                 goto view_end;
             }
+            settings.count_rf |= SAM_QNAME;
             break;
         case LONGOPT('s'):
             settings.subsam_frac = strtod(optarg, &tmp);
@@ -896,9 +877,13 @@ int main_samview(int argc, char *argv[])
                 print_error("view", "Incorrect sampling argument \"%s\"", optarg);
                 goto view_end;
             }
+            settings.count_rf |= SAM_QNAME;
             break;
         case LONGOPT('S'): settings.subsam_seed = atoi(optarg); break;
-        case 'm': settings.min_qlen = atoi(optarg); break;
+        case 'm':
+            settings.min_qlen = atoi(optarg);
+            settings.count_rf |= SAM_SEQ;
+            break;
         case 'c': settings.is_count = 1; break;
         case 'S': break;
         case 'b': out_format = "b"; break;
@@ -910,15 +895,32 @@ int main_samview(int argc, char *argv[])
         case 'o': settings.fn_out = strdup(optarg); break;
         case 'U': settings.fn_un_out = strdup(optarg); break;
         case 'X': has_index_file = 1; break;
-        case 'f': settings.flag_on |= bam_str2flag(optarg); break;
-        case 'F': settings.flag_off |= bam_str2flag(optarg); break;
+        case 'f':
+            settings.flag_on |= bam_str2flag(optarg);
+            settings.count_rf |= SAM_FLAG | SAM_RNEXT;
+            break;
+        case 'F':
+            settings.flag_off |= bam_str2flag(optarg);
+            settings.count_rf |= SAM_FLAG | SAM_RNEXT;
+            break;
         case LONGOPT('g'):
-            settings.flag_anyon |= bam_str2flag(optarg); break;
-        case 'G': settings.flag_alloff |= bam_str2flag(optarg); break;
-        case 'q': settings.min_mapQ = atoi(optarg); break;
+            settings.flag_anyon |= bam_str2flag(optarg);
+            settings.count_rf |= SAM_FLAG | SAM_RNEXT;
+            break;
+        case 'G':
+            settings.flag_alloff |= bam_str2flag(optarg);
+            settings.count_rf |= SAM_FLAG | SAM_RNEXT;
+            break;
+        case 'q':
+            settings.min_mapQ = atoi(optarg);
+            settings.count_rf |= SAM_MAPQ;
+            break;
         case 'u': compress_level = 0; break;
         case '1': compress_level = 1; break;
-        case 'l': settings.library = strdup(optarg); break;
+        case 'l':
+            settings.library = strdup(optarg);
+            settings.count_rf |= SAM_RGAUX;
+            break;
         case 'p': settings.unmap = 1; break;
         case 'P': settings.fetch_pairs = 1; settings.multi_region = 1; break;
         case 'z':
@@ -936,25 +938,30 @@ int main_samview(int argc, char *argv[])
                 ret = 1;
                 goto view_end;
             }
+            settings.count_rf |= SAM_POS | SAM_RNAME | SAM_CIGAR;
             break;
         case 'r':
             if (add_read_group_single("view", &settings, optarg) != 0) {
                 ret = 1;
                 goto view_end;
             }
+            settings.count_rf |= SAM_RGAUX;
             break;
         case 'R':
             if (add_read_groups_file("view", &settings, optarg) != 0) {
                 ret = 1;
                 goto view_end;
             }
+            settings.count_rf |= SAM_RGAUX;
             break;
         case 'N':
             if (add_read_names_file("view", &settings, optarg) != 0) {
                 ret = 1;
                 goto view_end;
             }
+            settings.count_rf |= SAM_QNAME;
             break;
+
         case 'd':
             if (strlen(optarg) < 2 || (strlen(optarg) > 2 && optarg[2] != ':')) {
                 print_error_errno("view", "Invalid \"tag:value\" option: \"%s\"", optarg);
@@ -982,7 +989,16 @@ int main_samview(int argc, char *argv[])
                 ret = 1;
                 goto view_end;
             }
+            // Some tag filtering affects other fields
+            if (memcmp(settings.tag, "NM", 2) == 0 ||
+                memcmp(settings.tag, "MD", 2) == 0)
+                settings.count_rf |= SAM_AUX | SAM_SEQ;
+            else if (memcmp(settings.tag, "RG", 2) == 0)
+                settings.count_rf |= SAM_RGAUX;
+            else
+                settings.count_rf |= SAM_AUX;
             break;
+
         case 'D':
             // Allow ";" as delimiter besides ":" to support MinGW CLI POSIX
             // path translation as described at:
@@ -1012,7 +1028,16 @@ int main_samview(int argc, char *argv[])
                 ret = 1;
                 goto view_end;
             }
+            // Some tag filtering affects other fields
+            if (memcmp(settings.tag, "NM", 2) == 0 ||
+                memcmp(settings.tag, "MD", 2) == 0)
+                settings.count_rf |= SAM_AUX | SAM_SEQ;
+            else if (memcmp(settings.tag, "RG", 2) == 0)
+                settings.count_rf |= SAM_RGAUX;
+            else
+                settings.count_rf |= SAM_AUX;
             break;
+
         case LONGOPT('?'):
             return usage(stdout, EXIT_SUCCESS, 1);
         case '?':
@@ -1041,23 +1066,30 @@ int main_samview(int argc, char *argv[])
                 print_error("main_samview", "Couldn't initialise filter");
                 return 1;
             }
+            settings.count_rf = INT_MAX; // no way to know what we need
             break;
         case LONGOPT('r'): settings.remove_flag |= bam_str2flag(optarg); break;
         case LONGOPT('a'): settings.add_flag |= bam_str2flag(optarg); break;
 
         case 'x':
             if (*optarg == '^') {
-                if (parse_aux_list(&settings.keep_tag, optarg+1))
+                if (parse_aux_list(&settings.keep_tag, optarg+1, "main_samview")) {
+                    aux_list_free(&settings);
                     return usage(stderr, EXIT_FAILURE, 0);
+                }
             } else {
-                if (parse_aux_list(&settings.remove_tag, optarg))
+                if (parse_aux_list(&settings.remove_tag, optarg, "main_samview")) {
+                    aux_list_free(&settings);
                     return usage(stderr, EXIT_FAILURE, 0);
+                }
             }
             break;
 
         case LONGOPT('x'):
-            if (parse_aux_list(&settings.keep_tag, optarg))
+            if (parse_aux_list(&settings.keep_tag, optarg, "main_samview")) {
+                aux_list_free(&settings);
                 return usage(stderr, EXIT_FAILURE, 0);
+            }
             break;
 
         default:
@@ -1259,6 +1291,9 @@ int main_samview(int argc, char *argv[])
         print_error("view", "Incorrect number of arguments for -X option. Aborting.");
         return 1;
     }
+    if (regs)
+        settings.count_rf |= SAM_POS | SAM_RNAME | SAM_CIGAR;
+
     if ( settings.fn_idx_in || nregs || settings.multi_region )
     {
         settings.hts_idx = settings.fn_idx_in ? sam_index_load2(settings.in, settings.fn_in, settings.fn_idx_in) : sam_index_load(settings.in, settings.fn_in);
@@ -1268,6 +1303,10 @@ int main_samview(int argc, char *argv[])
             return 1;
         }
     }
+
+    if (settings.is_count)
+        // Won't fail, but also wouldn't matter if it did
+        hts_set_opt(settings.in, CRAM_OPT_REQUIRED_FIELDS, settings.count_rf);
 
     if ( settings.fetch_pairs )
     {
@@ -1368,10 +1407,7 @@ view_end:
         free(settings.fn_un_out_idx);
     free(arg_list);
 
-    if (settings.keep_tag)
-        kh_destroy(aux_exists, settings.keep_tag);
-    if (settings.remove_tag)
-        kh_destroy(aux_exists, settings.remove_tag);
+    aux_list_free(&settings);
 
     return ret;
 }
