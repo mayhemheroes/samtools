@@ -1,0 +1,5 @@
+project: samtools
+target: samtools
+
+cmds:
+  - cmd: /samtools faidx @@

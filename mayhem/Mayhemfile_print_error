@@ -1,0 +1,5 @@
+project: samtools
+target: print-error
+
+cmds:
+  - cmd: /fuzz_print_error
